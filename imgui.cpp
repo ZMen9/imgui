@@ -1357,8 +1357,10 @@ void ImGuiIO::SetKeyEventNativeData(ImGuiKey key, int native_keycode, int native
     // Build native->imgui map so old user code can still call key functions with native 0..511 values.
 #ifndef IMGUI_DISABLE_OBSOLETE_KEYIO
     const int legacy_key = (native_legacy_index != -1) ? native_legacy_index : native_keycode;
-    if (ImGui::IsLegacyKey(legacy_key))
-        KeyMap[legacy_key] = key;
+    if (!ImGui::IsLegacyKey(legacy_key))
+        return;
+    KeyMap[legacy_key] = key;
+    KeyMap[key] = legacy_key;
 #else
     IM_UNUSED(key);
     IM_UNUSED(native_legacy_index);
@@ -2648,6 +2650,7 @@ bool ImGuiListClipper::Step()
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = g.CurrentWindow;
     ImGuiListClipperData* data = (ImGuiListClipperData*)TempData;
+    IM_ASSERT(data != NULL && "Called ImGuiListClipper::Step() too many times, or before ImGuiListClipper::Begin() ?");
 
     ImGuiTable* table = g.CurrentTable;
     if (table && table->IsInsideRow)
@@ -4094,9 +4097,9 @@ static void ImGui::UpdateKeyboardInputs()
 #ifndef IMGUI_DISABLE_OBSOLETE_KEYIO
     if (io.BackendUsingLegacyKeyArrays == 0)
     {
-        // Backend used new io.AddKeyEvent() API: Good! Verify that old arrays are never written too.
-        for (int n = 0; n < IM_ARRAYSIZE(io.KeysDown); n++)
-            IM_ASSERT(io.KeysDown[n] == false && "Backend needs to either only use io.AddKeyEvent(), either only fill legacy io.KeysDown[] + io.KeyMap[]. Not both!");
+        // Backend used new io.AddKeyEvent() API: Good! Verify that old arrays are never written to externally.
+        for (int n = 0; n < ImGuiKey_LegacyNativeKey_END; n++)
+            IM_ASSERT((io.KeysDown[n] == false || IsKeyDown(n)) && "Backend needs to either only use io.AddKeyEvent(), either only fill legacy io.KeysDown[] + io.KeyMap[]. Not both!");
     }
     else
     {
@@ -4119,6 +4122,8 @@ static void ImGui::UpdateKeyboardInputs()
                 const ImGuiKey key = (ImGuiKey)(io.KeyMap[n] != -1 ? io.KeyMap[n] : n);
                 IM_ASSERT(io.KeyMap[n] == -1 || IsNamedKey(key));
                 io.KeysData[key].Down = io.KeysDown[n];
+                if (key != n)
+                    io.KeysDown[key] = io.KeysDown[n]; // Allow legacy code using io.KeysDown[GetKeyIndex()] with old backends
                 io.BackendUsingLegacyKeyArrays = 1;
             }
         if (io.BackendUsingLegacyKeyArrays == 1)
@@ -8475,6 +8480,13 @@ void ImGui::UpdateInputEvents(bool trickle_fast_inputs)
                     if (key == ImGuiKey_ModSuper) { io.KeySuper = keydata->Down; }
                     io.KeyMods = GetMergedKeyModFlags();
                 }
+
+                // Allow legacy code using io.KeysDown[GetKeyIndex()] with new backends
+#ifndef IMGUI_DISABLE_OBSOLETE_KEYIO
+                io.KeysDown[key] = keydata->Down;
+                if (io.KeyMap[key] != -1)
+                    io.KeysDown[io.KeyMap[key]] = keydata->Down;
+#endif
             }
         }
         else if (e->Type == ImGuiInputEventType_Text)
@@ -8567,7 +8579,7 @@ static void ImGui::ErrorCheckNewFrameSanityChecks()
     IM_ASSERT(g.Style.WindowMenuButtonPosition == ImGuiDir_None || g.Style.WindowMenuButtonPosition == ImGuiDir_Left || g.Style.WindowMenuButtonPosition == ImGuiDir_Right);
 #ifndef IMGUI_DISABLE_OBSOLETE_KEYIO
     for (int n = ImGuiKey_NamedKey_BEGIN; n < ImGuiKey_COUNT; n++)
-        IM_ASSERT(g.IO.KeyMap[n] >= -1 && g.IO.KeyMap[n] < IM_ARRAYSIZE(g.IO.KeysDown) && "io.KeyMap[] contains an out of bound value (need to be 0..511, or -1 for unmapped key)");
+        IM_ASSERT(g.IO.KeyMap[n] >= -1 && g.IO.KeyMap[n] < ImGuiKey_LegacyNativeKey_END && "io.KeyMap[] contains an out of bound value (need to be 0..511, or -1 for unmapped key)");
 
     // Check: required key mapping (we intentionally do NOT check all keys to not pressure user into setting up everything, but Space is required and was only added in 1.60 WIP)
     if ((g.IO.ConfigFlags & ImGuiConfigFlags_NavEnableKeyboard) && g.IO.BackendUsingLegacyKeyArrays == 1)
